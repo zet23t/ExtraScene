@@ -17,20 +17,23 @@ static void *ListAlloc(void **list, unsigned long *count, unsigned long *capacit
     {
         ptr[i] = 0;
     }
-    return (void*) ptr; 
+    return (void *)ptr;
 }
 
-typedef struct SceneModel {
+typedef struct SceneModel
+{
     long generation;
     Model model;
     const char *name;
     char isManaged;
 } SceneModel;
 
-typedef struct SceneNode {
+typedef struct SceneNode
+{
     long generation;
     SceneNodeId nextSiblingId;
     SceneNodeId firstChildId;
+    // the generation of the transform data; is increased when TRS is modified
     unsigned long modTRSGeneration;
     unsigned long modTRSMarker;
 
@@ -47,7 +50,8 @@ typedef struct SceneNode {
     SceneModelId model;
 } SceneNode;
 
-typedef struct Scene {
+typedef struct Scene
+{
     long generation;
 
     SceneNodeId firstRoot, firstFree;
@@ -64,9 +68,9 @@ typedef struct Scene {
 Scene *scenes = 0;
 unsigned long scenesCount = 0;
 
-static SceneNode* GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut);
+static SceneNode *GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut);
 
-//# Scene Management Functions
+// # Scene Management Functions
 SceneId LoadScene()
 {
     int useIndex = -1;
@@ -90,8 +94,7 @@ SceneId LoadScene()
     sceneId.generation = -sceneId.generation + 1;
 
     scenes[useIndex] = (Scene){
-        .generation = sceneId.generation
-    };
+        .generation = sceneId.generation};
 
     return sceneId;
 }
@@ -195,7 +198,7 @@ void DrawScene(SceneId sceneId, Camera3D camera, Matrix transform, unsigned long
     }
 }
 
-SceneModelId AddModelToScene(SceneId sceneId, Model model, const char* name, int manageModel)
+SceneModelId AddModelToScene(SceneId sceneId, Model model, const char *name, int manageModel)
 {
     if (!IsSceneValid(sceneId))
     {
@@ -209,13 +212,12 @@ SceneModelId AddModelToScene(SceneId sceneId, Model model, const char* name, int
         .generation = sceneModel->generation + 1,
         .model = model,
         .name = name,
-        .isManaged = manageModel
-    };
+        .isManaged = manageModel};
 
     return (SceneModelId){sceneId, index, sceneModel->generation};
 }
 
-static Scene* GetScene(SceneId sceneId)
+static Scene *GetScene(SceneId sceneId)
 {
     if (!IsSceneValid(sceneId))
     {
@@ -231,7 +233,6 @@ void AddGLTFScene(SceneId sceneId, const char *filename, Matrix transform)
     {
         return;
     }
-
 }
 
 SceneNodeId AcquireSceneNode(SceneId sceneId)
@@ -262,19 +263,32 @@ SceneNodeId AcquireSceneNode(SceneId sceneId)
         .scale = (Vector3){1, 1, 1},
         .name = 0,
         .modTRSMarker = 0,
-        .modTRSGeneration = 0,
+        .modTRSGeneration = 1,
         .localToWorld = MatrixIdentity(),
         .worldToLocal = MatrixIdentity(),
         .userIdentifier = 0,
         .parent = (SceneNodeId){0},
-        .model = (SceneModelId){0}
-    };
+        .model = (SceneModelId){0}};
 
     return (SceneNodeId){sceneId, index, node->generation};
 }
 
+static unsigned long GetSceneNodeGenerationSum(SceneNode *node)
+{
+    unsigned long generationSum = node->modTRSGeneration;
+    SceneNode *parentNode = GetSceneNode(node->parent, 0);
+    while (parentNode)
+    {
+        // TraceLog(LOG_INFO, "parentNode: %p", parentNode);
+        generationSum += parentNode->modTRSGeneration;
+        parentNode = GetSceneNode(parentNode->parent, 0);
+    }
+
+    return generationSum;
+}
+
 // returns the node if it is dirty, otherwise 0; saves pointer resolving for callee
-static SceneNode* IsSceneNodeTRSDirty(SceneNodeId sceneNodeId)
+static SceneNode *IsSceneNodeTRSDirty(SceneNodeId sceneNodeId)
 {
     Scene *scene;
     SceneNode *node = GetSceneNode(sceneNodeId, &scene);
@@ -283,22 +297,11 @@ static SceneNode* IsSceneNodeTRSDirty(SceneNodeId sceneNodeId)
         return 0;
     }
 
-    unsigned long maxParentModGeneration = node->modTRSGeneration;
-    SceneNode *parentNode = GetSceneNode(node->parent, 0);
-    while (parentNode)
-    {
-        if (parentNode->modTRSGeneration > maxParentModGeneration)
-        {
-            maxParentModGeneration = parentNode->modTRSGeneration;
-        }
-
-        parentNode = GetSceneNode(parentNode->parent, 0);
-    }
-
-    return node->modTRSMarker != maxParentModGeneration ? node : 0;
+    unsigned long generationSum = GetSceneNodeGenerationSum(node);
+    return node->modTRSMarker != generationSum ? node : 0;
 }
 
-static SceneNode* GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut)
+static SceneNode *GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut)
 {
     Scene *scene = GetScene(sceneNodeId.sceneId);
     if (!scene)
@@ -311,7 +314,8 @@ static SceneNode* GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut)
         return 0;
     }
 
-    if (sceneOut) *sceneOut = scene;
+    if (sceneOut)
+        *sceneOut = scene;
 
     return &scene->nodes[sceneNodeId.id];
 }
@@ -346,9 +350,10 @@ void SetSceneNodeParent(SceneNodeId sceneNodeId, SceneNodeId parentSceneNodeId)
     node->parent = parentSceneNodeId;
     node->nextSiblingId = parentNode->firstChildId;
     parentNode->firstChildId = sceneNodeId;
-    node->modTRSGeneration += node->modTRSGeneration == node->modTRSMarker;
+    node->modTRSGeneration = 0;
 }
 
+// releases a scene node (destroy) and all its children
 void ReleaseSceneNode(SceneNodeId sceneNodeId)
 {
     Scene *scene;
@@ -361,14 +366,23 @@ void ReleaseSceneNode(SceneNodeId sceneNodeId)
     SceneNode *parentNode = GetSceneNode(node->parent, 0);
     if (parentNode)
     {
+        // remove from parent child list
         SceneNodeId siblingId = parentNode->firstChildId;
-        SceneNode* sibling = GetSceneNode(siblingId, 0);
-        while (sibling)
+        if (siblingId.id == sceneNodeId.id)
         {
-
+            parentNode->firstChildId = node->nextSiblingId;
+        }
+        else
+        {
+            SceneNode *sibling = GetSceneNode(siblingId, 0);
+            while (sibling && sibling->nextSiblingId.id != sceneNodeId.id)
+            {
+                siblingId = sibling->nextSiblingId;
+                sibling = GetSceneNode(siblingId, 0);
+            }
+            sibling->nextSiblingId = node->nextSiblingId;
         }
     }
-            
 
     node->generation++;
     if (node->name)
@@ -376,7 +390,21 @@ void ReleaseSceneNode(SceneNodeId sceneNodeId)
         MemFree(node->name);
         node->name = 0;
     }
-    
+
+    // release children
+    SceneNodeId childId = node->firstChildId;
+    SceneNode* child = GetSceneNode(childId, 0);
+    while (child)
+    {
+        SceneNodeId nextChildId = child->nextSiblingId;
+        ReleaseSceneNode(childId);
+        child = GetSceneNode(nextChildId, 0);
+        childId = nextChildId;
+    }
+
+    // add to free list
+    node->nextSiblingId = scene->firstFree;
+    scene->firstFree = sceneNodeId;
 }
 
 void SetSceneNodePosition(SceneNodeId sceneNodeId, float x, float y, float z)
@@ -388,7 +416,7 @@ void SetSceneNodePosition(SceneNodeId sceneNodeId, float x, float y, float z)
     }
 
     node->position = (Vector3){x, y, z};
-    node->modTRSGeneration += node->modTRSGeneration == node->modTRSMarker;
+    node->modTRSGeneration += 1;
 }
 
 void SetSceneNodeRotation(SceneNodeId sceneNodeId, float eulerXDeg, float eulerYDeg, float eulerZDeg)
@@ -400,7 +428,7 @@ void SetSceneNodeRotation(SceneNodeId sceneNodeId, float eulerXDeg, float eulerY
     }
 
     node->rotation = (Vector3){eulerXDeg, eulerYDeg, eulerZDeg};
-    node->modTRSGeneration += node->modTRSGeneration == node->modTRSMarker;
+    node->modTRSGeneration += 1;
 }
 
 void SetSceneNodeScale(SceneNodeId sceneNodeId, float x, float y, float z)
@@ -412,7 +440,7 @@ void SetSceneNodeScale(SceneNodeId sceneNodeId, float x, float y, float z)
     }
 
     node->scale = (Vector3){x, y, z};
-    node->modTRSGeneration += node->modTRSGeneration == node->modTRSMarker;
+    node->modTRSGeneration += 1;
 }
 
 void SetSceneNodePositionV(SceneNodeId sceneNodeId, Vector3 position)
@@ -429,7 +457,6 @@ void SetSceneNodeScaleV(SceneNodeId sceneNodeId, Vector3 scale)
 {
     SetSceneNodeScale(sceneNodeId, scale.x, scale.y, scale.z);
 }
-
 
 Vector3 GetSceneNodeLocalPosition(SceneNodeId sceneNodeId)
 {
@@ -464,25 +491,27 @@ Vector3 GetSceneNodeLocalScale(SceneNodeId sceneNodeId)
     return node->scale;
 }
 
-static SceneNode* UpdateSceneNodeTRS(SceneNodeId sceneNodeId)
+static SceneNode *UpdateSceneNodeTRS(SceneNodeId sceneNodeId)
 {
     SceneNode *node = IsSceneNodeTRSDirty(sceneNodeId);
     if (!node)
     {
-        return node;
+        return GetSceneNode(sceneNodeId, 0);
     }
-    
-    SceneNode* parentNode = GetSceneNode(node->parent, 0);
+
+    SceneNode *parentNode = GetSceneNode(node->parent, 0);
     node->localToWorld = MatrixIdentity();
     node->localToWorld = MatrixMultiply(node->localToWorld, MatrixScale(node->scale.x, node->scale.y, node->scale.z));
-    node->localToWorld = MatrixMultiply(node->localToWorld, MatrixRotateXYZ((Vector3){DEG2RAD*node->rotation.x, DEG2RAD*node->rotation.y, DEG2RAD*node->rotation.z}));
+    node->localToWorld = MatrixMultiply(node->localToWorld, MatrixRotateXYZ((Vector3){DEG2RAD * node->rotation.x, DEG2RAD * node->rotation.y, DEG2RAD * node->rotation.z}));
     node->localToWorld = MatrixMultiply(node->localToWorld, MatrixTranslate(node->position.x, node->position.y, node->position.z));
     if (parentNode)
     {
         UpdateSceneNodeTRS(node->parent);
         node->localToWorld = MatrixMultiply(node->localToWorld, parentNode->localToWorld);
     }
-    
+
+    unsigned long generationSum = GetSceneNodeGenerationSum(node);
+    node->modTRSMarker = generationSum;
 
     return node;
 }
@@ -522,7 +551,7 @@ Vector3 GetSceneNodeWorldRight(SceneNodeId sceneNodeId)
     return (Vector3){localToWorld.m0, localToWorld.m1, localToWorld.m2};
 }
 
-static char* StringDup(const char *str)
+static char *StringDup(const char *str)
 {
     if (!str)
     {
@@ -552,7 +581,7 @@ int SetSceneNodeName(SceneNodeId sceneNodeId, const char *name)
     return 1;
 }
 
-const char* GetSceneNodeName(SceneNodeId sceneNodeId)
+const char *GetSceneNodeName(SceneNodeId sceneNodeId)
 {
     SceneNode *node = GetSceneNode(sceneNodeId, 0);
     if (!node)

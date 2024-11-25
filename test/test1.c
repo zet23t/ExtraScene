@@ -3,6 +3,27 @@
 #include "scene.h"
 #include <math.h>
 
+SceneNodeId CreateTreePatch(SceneId sceneId, SceneModelId modelId, int count)
+{
+    SceneNodeId root = AcquireSceneNode(sceneId);
+    
+    for (int i = 0; i < 100; i++)
+    {
+        SceneNodeId firTreeNodeId = AcquireSceneNode(sceneId);
+        SetSceneNodeModel(firTreeNodeId, modelId);
+        float rx = GetRandomValue(-400, 400) * 0.01f;
+        float rz = GetRandomValue(-400, 400) * 0.01f;
+        SetSceneNodePosition(firTreeNodeId, rx, 0, rz);
+        float scale = GetRandomValue(90, 110) * 0.01f;
+        float scaleHeight = GetRandomValue(20, -20) * 0.01f + scale;
+        SetSceneNodeScale(firTreeNodeId, scale, scaleHeight, scale);
+        SetSceneNodeRotation(firTreeNodeId, 0, GetRandomValue(0, 360), 0);
+        SetSceneNodeParent(firTreeNodeId, root);
+    }
+
+    return root;
+}
+
 int main(void)
 {
     // Initialization
@@ -10,7 +31,7 @@ int main(void)
     const int screenWidth = 800;
     const int screenHeight = 450;
 
-    InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window");
+    InitWindow(screenWidth, screenHeight, "Scene graph test");
 
     Model firTree = LoadModel("resources/firtree-1.glb");
     Model biplane = LoadModel("resources/biplane-1.glb");
@@ -32,17 +53,12 @@ int main(void)
     SetSceneNodePosition(biplanePropellerNodeId, 0, 0, 0.0f);
     SetSceneNodeParent(biplanePropellerNodeId, biplaneNodeId);
 
-    for (int i = 0; i < 100; i++)
+    const int treePatchCount = 8;
+    SceneNodeId treePatchNodeId[treePatchCount]; 
+    for (int i = 0; i < 8; i++)
     {
-        SceneNodeId firTreeNodeId = AcquireSceneNode(sceneId);
-        SetSceneNodeModel(firTreeNodeId, firTreeId);
-        float rx = GetRandomValue(-400, 400) * 0.01f;
-        float rz = GetRandomValue(-400, 400) * 0.01f;
-        SetSceneNodePosition(firTreeNodeId, rx, 0, rz);
-        float scale = GetRandomValue(90, 110) * 0.01f;
-        float scaleHeight = GetRandomValue(20, -20) * 0.01f + scale;
-        SetSceneNodeScale(firTreeNodeId, scale, scaleHeight, scale);
-        SetSceneNodeRotation(firTreeNodeId, 0, GetRandomValue(0, 360), 0);
+        treePatchNodeId[i] = CreateTreePatch(sceneId, firTreeId, 50);
+        SetSceneNodePosition(treePatchNodeId[i], 0, 0, i * 8.0f);
     }
 
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
@@ -67,15 +83,30 @@ int main(void)
         camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
         camera.fovy = 35.0f;
         camera.projection = CAMERA_PERSPECTIVE;
+        
+        float pitch = sinf(GetTime() * 0.55f) * 10.0f;
+        float yaw = cosf(GetTime() * 0.7f) * 20.0f;
+        float roll = sinf(GetTime() * 0.7f) * 20.0f;
+        float height = cosf(GetTime() * 0.55f) * 0.5f + 2.5f;
+        float x = sinf(GetTime() * 0.7f) * 1.0f;
+        SetSceneNodePosition(biplaneNodeId, x, height, 0);
+        SetSceneNodeRotation(biplaneNodeId, pitch, yaw, roll);
+        SetSceneNodeRotation(biplanePropellerNodeId, 0, 0, GetTime() * 5000.0f);
 
-        SetSceneNodeRotation(biplaneNodeId, sinf(GetTime() * 0.55f) * 10.0f, cosf(GetTime() * 0.7f) * 20.0f, 0);
-        SetSceneNodeRotation(biplanePropellerNodeId, 0, 0, GetTime() * 1000.0f);
+        float zOffset = -GetTime() * 2.5f - 16.0f;
+        float z = 0;
+        for (int i = 0; i < treePatchCount; i++)
+        {
+            z = i * 8.0f + zOffset;
+            z = fmodf(z, treePatchCount * 8.0f) + 16.0f;
+            SetSceneNodePosition(treePatchNodeId[i], 0, 0, z);
+        }
 
         BeginMode3D(camera);
         DrawScene(sceneId, camera, MatrixIdentity(), 0, SCENE_DRAW_SORT_NONE);
         EndMode3D();
 
-        DrawText("Hello, world!", 190, 200, 20, BLACK);
+        DrawText("Scenegraph test", 10, 10, 20, BLACK);
 
         EndDrawing();
         //----------------------------------------------------------------------------------
