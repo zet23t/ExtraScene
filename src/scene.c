@@ -53,11 +53,20 @@ typedef struct SceneNode
     // SceneNode metadata
     int userIdentifier;
     SceneModelId model;
+
+    
 } SceneNode;
+
+typedef struct SceneComponentData
+{
+    unsigned char *componentData;
+} SceneComponentData;
 
 typedef struct Scene
 {
     long generation;
+
+    SceneComponentData sceneComponentData[256];
 
     SceneNodeId firstRoot, firstFree;
     SceneNode *nodes;
@@ -70,8 +79,22 @@ typedef struct Scene
 
 } Scene;
 
-Scene *scenes = 0;
-unsigned long scenesCount = 0;
+static Scene *scenes = 0;
+static unsigned long scenesCount = 0;
+
+static SceneNodeComponentDefinition sceneNodeComponentDefinitions[256] = {0};
+
+void RegisterSceneNodeComponent(SceneNodeComponentDefinition definition)
+{
+    int index = definition.definitionId;
+    if (sceneNodeComponentDefinitions[index].name)
+    {
+        TraceLog(LOG_WARNING, "RegisterSceneNodeComponent: definition with id %d already exists: %s vs %s", 
+            index, definition.name, sceneNodeComponentDefinitions[index].name);
+        return;
+    }
+    sceneNodeComponentDefinitions[index] = definition;
+}
 
 static SceneNode *GetSceneNode(SceneNodeId sceneNodeId, Scene **sceneOut);
 

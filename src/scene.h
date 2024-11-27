@@ -44,6 +44,32 @@ typedef struct SceneModelId {
     long generation;
 } SceneModelId;
 
+typedef struct SceneNodeComponentId {
+    SceneId ownerSceneId;
+    unsigned long componentIndex;
+    unsigned short generation;
+    unsigned char definitionId;
+} SceneNodeComponentId;
+
+typedef struct SceneRaycastHit {
+    SceneNodeComponentId componentId;
+    Vector3 position;
+    Vector3 normal;
+    float distance;
+} SceneRaycastHit;
+
+typedef struct SceneNodeComponentDefinition {
+    // component definitions are shared between scenes
+    // the definitionId is used to identify the component type
+    // the definitionId is unique per definition; 256 definitions should be enough
+    unsigned char definitionId;
+    unsigned long componentDataSize;
+    const char *name;
+    void (*onAdd)(SceneNodeId nodeId, void *data);
+    void (*onRemove)(SceneNodeId nodeId, void *data);
+    void (*onDraw)(SceneNodeId nodeId, Matrix localToWorld, void *data);
+} SceneNodeComponentDefinition;
+
 typedef struct SceneDrawConfig {
     Camera3D camera;
     Matrix transform;
@@ -58,6 +84,8 @@ typedef struct SceneDrawStats {
     unsigned long meshDrawCount;
     unsigned long trianglesDrawCount;
 } SceneDrawStats;
+
+void RegisterSceneNodeComponent(SceneNodeComponentDefinition definition);
 
 // creates a new empty scene
 SceneId LoadScene();
