@@ -2,12 +2,15 @@
 #include "raymath.h"
 #include "scene.h"
 #include <math.h>
+#include <rlgl.h>
+
+#define TREE_PATCH_COUNT 8
 
 SceneNodeId CreateTreePatch(SceneId sceneId, SceneModelId modelId, int count)
 {
     SceneNodeId root = AcquireSceneNode(sceneId);
     
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i < count; i++)
     {
         SceneNodeId firTreeNodeId = AcquireSceneNode(sceneId);
         SetSceneNodeModel(firTreeNodeId, modelId);
@@ -22,6 +25,33 @@ SceneNodeId CreateTreePatch(SceneId sceneId, SceneModelId modelId, int count)
     }
 
     return root;
+}
+
+static Vector3 Vector4Transform3(Vector4 v, Matrix m)
+{
+    Vector4 result = { 0 };
+    result.x = v.x*m.m0 + v.y*m.m4 + v.z*m.m8 + v.w*m.m12;
+    result.y = v.x*m.m1 + v.y*m.m5 + v.z*m.m9 + v.w*m.m13;
+    result.z = v.x*m.m2 + v.y*m.m6 + v.z*m.m10 + v.w*m.m14;
+    result.w = v.x*m.m3 + v.y*m.m7 + v.z*m.m11 + v.w*m.m15;
+    return (Vector3){result.x / result.w, result.y / result.w, result.z / result.w};
+}
+
+static void CalcFrustumCorners(Camera3D camera, Vector3* corners)
+{
+    Matrix view = GetCameraMatrix(camera);
+    Matrix proj = MatrixIdentity();
+    proj = MatrixPerspective(camera.fovy * DEG2RAD, (double)GetScreenWidth() / (double)GetScreenHeight(), 1.0f, 30.0f);
+    Matrix viewProj = MatrixMultiply(view, proj);
+    viewProj = MatrixInvert(viewProj);
+    corners[0] = Vector4Transform3((Vector4){-1, -1, -1, 1}, viewProj);
+    corners[1] = Vector4Transform3((Vector4){1, -1, -1, 1}, viewProj);
+    corners[2] = Vector4Transform3((Vector4){1, 1, -1, 1}, viewProj);
+    corners[3] = Vector4Transform3((Vector4){-1, 1, -1, 1}, viewProj);
+    corners[4] = Vector4Transform3((Vector4){-1, -1, 1, 1}, viewProj);
+    corners[5] = Vector4Transform3((Vector4){1, -1, 1, 1}, viewProj);
+    corners[6] = Vector4Transform3((Vector4){1, 1, 1, 1}, viewProj);
+    corners[7] = Vector4Transform3((Vector4){-1, 1, 1, 1}, viewProj);
 }
 
 int main(void)
@@ -53,8 +83,7 @@ int main(void)
     SetSceneNodePosition(biplanePropellerNodeId, 0, 0, 0.0f);
     SetSceneNodeParent(biplanePropellerNodeId, biplaneNodeId);
 
-    const int treePatchCount = 8;
-    SceneNodeId treePatchNodeId[treePatchCount]; 
+    SceneNodeId treePatchNodeId[TREE_PATCH_COUNT]; 
     for (int i = 0; i < 8; i++)
     {
         treePatchNodeId[i] = CreateTreePatch(sceneId, firTreeId, 50);
@@ -64,49 +93,113 @@ int main(void)
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
     //--------------------------------------------------------------------------------------
 
+    float time = 0.0f;
+    int isPaused = 0;
+    int useExternalCamera = 0;
+    int drawBoundingBoxes = 0;
+    // rlSetClipPlanes(1.0f,50.0f);
     // Main game loop
+    Camera3D externalCamera;
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
-        // Update
-        //----------------------------------------------------------------------------------
-        // TODO: Update your variables here
-        //----------------------------------------------------------------------------------
-
+        time += isPaused ? 0.0f : GetFrameTime();
+        if (IsKeyPressed(KEY_P))
+        {
+            isPaused = !isPaused;
+        }
+        if (IsKeyPressed(KEY_B))
+        {
+            drawBoundingBoxes = !drawBoundingBoxes;
+        }
+        if (IsKeyPressed(KEY_C))
+        {
+            useExternalCamera = !useExternalCamera;
+            
+            if (useExternalCamera)
+            {
+                externalCamera.position = (Vector3){ 15.0f, 25.0f, 10.0f };
+                externalCamera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+                externalCamera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+                externalCamera.fovy = 55.0f;
+                externalCamera.projection = CAMERA_PERSPECTIVE;
+            }
+        }
+        
         // Draw
         //----------------------------------------------------------------------------------
         BeginDrawing();
 
-        ClearBackground(RAYWHITE);
+        ClearBackground(useExternalCamera ? GRAY : RAYWHITE);
         Camera3D camera = { 0 };
         camera.position = (Vector3){ 3.0f, 10.0f, 10.0f };
         camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
         camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
         camera.fovy = 35.0f;
         camera.projection = CAMERA_PERSPECTIVE;
-        
-        float pitch = sinf(GetTime() * 0.55f) * 10.0f;
-        float yaw = cosf(GetTime() * 0.7f) * 20.0f;
-        float roll = sinf(GetTime() * 0.7f) * 20.0f;
-        float height = cosf(GetTime() * 0.55f) * 0.5f + 2.5f;
-        float x = sinf(GetTime() * 0.7f) * 1.0f;
-        SetSceneNodePosition(biplaneNodeId, x, height, 0);
-        SetSceneNodeRotation(biplaneNodeId, pitch, yaw, roll);
-        SetSceneNodeRotation(biplanePropellerNodeId, 0, 0, GetTime() * 5000.0f);
 
-        float zOffset = -GetTime() * 2.5f - 16.0f;
+        if (!useExternalCamera)
+        {
+            externalCamera = camera;
+        }
+        else if (IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+        {
+            UpdateCamera(&externalCamera, CAMERA_THIRD_PERSON);
+        }
+        float pitch = sinf(time * 0.55f) * 10.0f;
+        float yaw = cosf(time * 0.7f) * 20.0f;
+        float roll = sinf(time * 0.7f) * 20.0f;
+        float height = cosf(time * 0.55f) * 0.5f + 2.5f;
+        float x = sinf(time * 0.7f) * 1.0f;
+        SetSceneNodePosition(biplaneNodeId, x, height, -height + 2.5f + pitch * 0.1f);
+        SetSceneNodeRotation(biplaneNodeId, pitch, yaw, roll);
+        SetSceneNodeRotation(biplanePropellerNodeId, 0, 0, time * 5000.0f);
+
+        float zOffset = -time * 2.5f - 16.0f;
         float z = 0;
-        for (int i = 0; i < treePatchCount; i++)
+        for (int i = 0; i < TREE_PATCH_COUNT; i++)
         {
             z = i * 8.0f + zOffset;
-            z = fmodf(z, treePatchCount * 8.0f) + 16.0f;
+            z = fmodf(z, TREE_PATCH_COUNT * 8.0f) + 16.0f;
             SetSceneNodePosition(treePatchNodeId[i], 0, 0, z);
         }
 
-        BeginMode3D(camera);
-        DrawScene(sceneId, camera, MatrixIdentity(), 0, SCENE_DRAW_SORT_NONE);
+        BeginMode3D(externalCamera);
+
+        SceneDrawStats drawStats = DrawScene(sceneId, (SceneDrawConfig) { .camera = camera, 
+            .transform = MatrixIdentity(), .layerMask = 0, 
+            .sortMode = SCENE_DRAW_SORT_NONE, .drawBoundingBoxes = drawBoundingBoxes });
+
+        if (useExternalCamera)
+        {
+            Vector3 corners[8];
+            CalcFrustumCorners(camera, corners);
+            
+            DrawLine3D(corners[0], corners[1], BLUE);
+            DrawLine3D(corners[1], corners[2], BLUE);
+            DrawLine3D(corners[2], corners[3], BLUE);
+            DrawLine3D(corners[3], corners[0], BLUE);
+            DrawLine3D(corners[4], corners[5], BLUE);
+            DrawLine3D(corners[5], corners[6], BLUE);
+            DrawLine3D(corners[6], corners[7], BLUE);
+            DrawLine3D(corners[7], corners[4], BLUE);
+            DrawLine3D(corners[0], corners[4], BLUE);
+            DrawLine3D(corners[1], corners[5], BLUE);
+            DrawLine3D(corners[2], corners[6], BLUE);
+            DrawLine3D(corners[3], corners[7], BLUE);
+        }
         EndMode3D();
 
-        DrawText("Scenegraph test", 10, 10, 20, BLACK);
+        const char *info = TextFormat("Scenegraph test\n"
+            "FPS: %d\n"
+            "C: switch camera\n"
+            "B: toggle bounding boxes\n"
+            "P: pause\n"
+            "Draw stats:\n"
+            "  Culled meshes: %d\n"
+            "  Meshes drawn: %d\n"
+            "  Triangles drawn: %d\n",
+            GetFPS(), drawStats.culledMeshCount, drawStats.meshDrawCount, drawStats.trianglesDrawCount);
+        DrawText(info, 10, 10, 20, BLACK);
 
         EndDrawing();
         //----------------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 #include <raymath.h>
 #include <scene.h>
 #include <string.h>
+#include <rlgl.h>
 
 static void *ListAlloc(void **list, unsigned long *count, unsigned long *capacity, unsigned long size)
 {
@@ -26,15 +27,20 @@ typedef struct SceneModel
     Model model;
     const char *name;
     char isManaged;
+    BoundingBox *meshBounds;
+    Vector4 *meshBoundingSpheres;
 } SceneModel;
 
 typedef struct SceneNode
 {
     long generation;
+    SceneNodeId parent;
     SceneNodeId nextSiblingId;
     SceneNodeId firstChildId;
+
     // the generation of the transform data; is increased when TRS is modified
     unsigned long modTRSGeneration;
+    // if modTRSMarker != modTRSGeneration, the TRS matrix is dirty
     unsigned long modTRSMarker;
 
     Vector3 position;
@@ -46,7 +52,6 @@ typedef struct SceneNode
 
     // SceneNode metadata
     int userIdentifier;
-    SceneNodeId parent;
     SceneModelId model;
 } SceneNode;
 
@@ -113,6 +118,11 @@ void UnloadScene(SceneId sceneId)
     for (int i = 0; i < scene->modelsCount; i++)
     {
         SceneModel *sceneModel = &scene->models[i];
+        MemFree(sceneModel->meshBounds);
+        MemFree(sceneModel->meshBoundingSpheres);
+        sceneModel->meshBounds = 0;
+        sceneModel->meshBoundingSpheres = 0;
+
         if (sceneModel->generation < 0 || !sceneModel->isManaged)
         {
             continue;
@@ -162,12 +172,147 @@ int IsSceneValid(SceneId sceneId)
     return sceneId.id < scenesCount && scenes[sceneId.id].generation == sceneId.generation;
 }
 
-void DrawScene(SceneId sceneId, Camera3D camera, Matrix transform, unsigned long layerMask, int sortMode)
+
+static Vector3 Vector4Transform3(Vector4 v, Matrix m)
 {
+    Vector4 result = { 0 };
+    result.x = v.x*m.m0 + v.y*m.m4 + v.z*m.m8 + v.w*m.m12;
+    result.y = v.x*m.m1 + v.y*m.m5 + v.z*m.m9 + v.w*m.m13;
+    result.z = v.x*m.m2 + v.y*m.m6 + v.z*m.m10 + v.w*m.m14;
+    result.w = v.x*m.m3 + v.y*m.m7 + v.z*m.m11 + v.w*m.m15;
+    return (Vector3){result.x / result.w, result.y / result.w, result.z / result.w};
+}
+
+static void CalcFrustumCorners(Camera3D camera, Vector3* corners)
+{
+    Matrix view = GetCameraMatrix(camera);
+    Matrix proj = MatrixIdentity();
+    proj = MatrixPerspective(camera.fovy * DEG2RAD, (double)GetScreenWidth() / (double)GetScreenHeight(), 1.0f, 30.0f);
+    Matrix viewProj = MatrixMultiply(view, proj);
+    viewProj = MatrixInvert(viewProj);
+    corners[0] = Vector4Transform3((Vector4){-1, -1, -1, 1}, viewProj);
+    corners[1] = Vector4Transform3((Vector4){1, -1, -1, 1}, viewProj);
+    corners[2] = Vector4Transform3((Vector4){1, 1, -1, 1}, viewProj);
+    corners[3] = Vector4Transform3((Vector4){-1, 1, -1, 1}, viewProj);
+    corners[4] = Vector4Transform3((Vector4){-1, -1, 1, 1}, viewProj);
+    corners[5] = Vector4Transform3((Vector4){1, -1, 1, 1}, viewProj);
+    corners[6] = Vector4Transform3((Vector4){1, 1, 1, 1}, viewProj);
+    corners[7] = Vector4Transform3((Vector4){-1, 1, 1, 1}, viewProj);
+}
+
+static void GetCameraFrustumPlanes(Camera3D camera, Vector4 *planes)
+{
+    // this algorithm is absolutely nowhere near optimal, but I am able
+    // to understand it and it works; it can be optimized later
+    Vector3 corners[8];
+    CalcFrustumCorners(camera, corners);
+    Vector3 nearCenter = Vector3Scale(Vector3Add(corners[0], corners[2]), 0.5f);
+    Vector3 farCenter = Vector3Scale(Vector3Add(corners[4], corners[6]), 0.5f);
+    Vector3 rightCenter = Vector3Scale(Vector3Add(corners[1], corners[6]), 0.5f);
+    Vector3 leftCenter = Vector3Scale(Vector3Add(corners[0], corners[7]), 0.5f);
+    Vector3 topCenter = Vector3Scale(Vector3Add(corners[2], corners[7]), 0.5f);
+    Vector3 bottomCenter = Vector3Scale(Vector3Add(corners[0], corners[5]), 0.5f);
+
+    Vector3 nearCenterNormal = Vector3Normalize(Vector3Subtract(nearCenter, camera.position));
+    Vector3 farCenterNormal = Vector3Scale(nearCenterNormal, -1.0f);
+    Vector3 rightCenterNormal = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(corners[2], corners[1]), Vector3Subtract(corners[6], corners[2])));
+    Vector3 leftCenterNormal = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(corners[3], corners[0]), Vector3Subtract(corners[0], corners[4])));
+    Vector3 topCenterNormal = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(corners[3], corners[2]), Vector3Subtract(corners[7], corners[3])));
+    Vector3 bottomCenterNormal = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(corners[1], corners[0]), Vector3Subtract(corners[5], corners[1])));
+
+    planes[0] = (Vector4){nearCenterNormal.x, nearCenterNormal.y, nearCenterNormal.z, Vector3DotProduct(nearCenter, nearCenterNormal)};
+    planes[1] = (Vector4){farCenterNormal.x, farCenterNormal.y, farCenterNormal.z, Vector3DotProduct(farCenter, farCenterNormal)};
+    planes[2] = (Vector4){rightCenterNormal.x, rightCenterNormal.y, rightCenterNormal.z, Vector3DotProduct(rightCenter, rightCenterNormal)};
+    planes[3] = (Vector4){leftCenterNormal.x, leftCenterNormal.y, leftCenterNormal.z, Vector3DotProduct(leftCenter, leftCenterNormal)};
+    planes[4] = (Vector4){topCenterNormal.x, topCenterNormal.y, topCenterNormal.z, Vector3DotProduct(topCenter, topCenterNormal)};
+    planes[5] = (Vector4){bottomCenterNormal.x, bottomCenterNormal.y, bottomCenterNormal.z, Vector3DotProduct(bottomCenter, bottomCenterNormal)};
+}
+
+static void DrawPlaneEq(Vector4 planeEq, Color color)
+{
+    Vector3 normal = (Vector3){planeEq.x, planeEq.y, planeEq.z};
+    Vector3 point = Vector3Scale(normal, planeEq.w);
+    Vector3 right = Vector3Normalize(Vector3CrossProduct(normal, (Vector3){0, 1, 0}));
+    Vector3 up = Vector3Normalize(Vector3CrossProduct(right, normal));
+    DrawLine3D(point, Vector3Add(point, right), RED);
+    DrawLine3D(point, Vector3Add(point, up), GREEN);
+    DrawLine3D(point, Vector3Subtract(point, right), RED);
+    DrawLine3D(point, Vector3Subtract(point, up), GREEN);
+}
+
+int CheckCollisionBoxFrustum(BoundingBox box, Vector4 *planes, Matrix transform)
+{
+    Vector3 corners[8] = {
+        (Vector3){box.min.x, box.min.y, box.min.z},
+        (Vector3){box.max.x, box.min.y, box.min.z},
+        (Vector3){box.max.x, box.max.y, box.min.z},
+        (Vector3){box.min.x, box.max.y, box.min.z},
+        (Vector3){box.min.x, box.min.y, box.max.z},
+        (Vector3){box.max.x, box.min.y, box.max.z},
+        (Vector3){box.max.x, box.max.y, box.max.z},
+        (Vector3){box.min.x, box.max.y, box.max.z}};
+    for (int i = 0; i < 8; i++)
+    {
+        corners[i] = Vector3Transform(corners[i], transform);
+    }
+
+    for (int i = 0; i < 6; i++)
+    {
+        int out = 0;
+        Vector3 planeCenter = Vector3Scale((Vector3){planes[i].x, planes[i].y, planes[i].z}, planes[i].w);
+        Vector3 planeNormal = (Vector3){planes[i].x, planes[i].y, planes[i].z};
+        for (int j = 0; j < 8; j++)
+        {
+            Vector3 relative = Vector3Subtract(corners[j], planeCenter);
+            if (Vector3DotProduct(planeNormal, relative) < 0)
+            {
+                // DrawLine3D(corners[j], planeCenter, BLUE);
+                // Vector3 planeNormal = Vector3Normalize((Vector3){planes[i].x, planes[i].y, planes[i].z});
+                // DrawLine3D(planeCenter, Vector3Add(planeCenter, planeNormal), RED);
+                out++;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (out == 8)
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+SceneDrawStats DrawScene(SceneId sceneId, SceneDrawConfig config)
+{
+    SceneDrawStats stats = {0};
     if (!IsSceneValid(sceneId))
     {
-        return;
+        return stats;
     }
+
+    Camera3D camera = config.camera; 
+    Matrix transform = config.transform;
+    unsigned long layerMask = config.layerMask;
+    int sortMode = config.sortMode;
+    char drawBoundingBoxes = config.drawBoundingBoxes;
+
+    Vector4 frustumPlanes[6];
+    GetCameraFrustumPlanes(camera, frustumPlanes);
+
+    if (config.drawCameraFrustum)
+    {
+        DrawPlaneEq(frustumPlanes[0], GREEN);
+        DrawPlaneEq(frustumPlanes[1], GREEN);
+        DrawPlaneEq(frustumPlanes[2], GREEN);
+        DrawPlaneEq(frustumPlanes[3], GREEN);
+        DrawPlaneEq(frustumPlanes[4], GREEN);
+        DrawPlaneEq(frustumPlanes[5], GREEN);
+    }
+
 
     Scene *scene = &scenes[sceneId.id];
     for (int i = 0; i < scene->nodesCount; i++)
@@ -188,14 +333,54 @@ void DrawScene(SceneId sceneId, Camera3D camera, Matrix transform, unsigned long
         Model model = sceneModel->model;
         for (int i = 0; i < model.meshCount; i++)
         {
+            BoundingBox box = sceneModel->meshBounds[i];
+            if (!CheckCollisionBoxFrustum(box, frustumPlanes, matrix))
+            {
+                stats.culledMeshCount++;
+                continue;
+            }
+
             Color color = model.materials[model.meshMaterial[i]].maps[MATERIAL_MAP_DIFFUSE].color;
 
             Color colorTint = WHITE;
             model.materials[model.meshMaterial[i]].maps[MATERIAL_MAP_DIFFUSE].color = colorTint;
             DrawMesh(model.meshes[i], model.materials[model.meshMaterial[i]], matrix);
             model.materials[model.meshMaterial[i]].maps[MATERIAL_MAP_DIFFUSE].color = color;
+
+            stats.meshDrawCount++;
+            stats.trianglesDrawCount += model.meshes[i].vertexCount / 3;
         }
     }
+    if (drawBoundingBoxes)
+    {
+        for (int i = 0; i < scene->nodesCount; i++)
+        {
+            SceneNode *node = &scene->nodes[i];
+            if (node->generation < 0)
+            {
+                continue;
+            }
+
+            SceneModel *sceneModel = &scene->models[node->model.id];
+            if (sceneModel->generation != node->model.generation)
+            {
+                continue;
+            }
+
+            Matrix matrix = GetSceneNodeLocalTransform((SceneNodeId){sceneId, i, node->generation});
+            Model model = sceneModel->model;
+            rlPushMatrix();
+            rlMultMatrixf(MatrixToFloat(matrix));
+            for (int i = 0; i < model.meshCount; i++)
+            {
+                BoundingBox box = sceneModel->meshBounds[i];
+                DrawBoundingBox(box, RED);
+            }
+            rlPopMatrix();
+        }
+    }
+
+    return stats;
 }
 
 SceneModelId AddModelToScene(SceneId sceneId, Model model, const char *name, int manageModel)
@@ -213,6 +398,17 @@ SceneModelId AddModelToScene(SceneId sceneId, Model model, const char *name, int
         .model = model,
         .name = name,
         .isManaged = manageModel};
+    
+    sceneModel->meshBounds = MemAlloc(sizeof(BoundingBox) * model.meshCount);
+    sceneModel->meshBoundingSpheres = MemAlloc(sizeof(Vector4) * model.meshCount);
+    for (int i = 0; i < model.meshCount; i++)
+    {
+        BoundingBox box = GetMeshBoundingBox(model.meshes[i]);
+        sceneModel->meshBounds[i] = box;
+        Vector3 center = Vector3Scale(Vector3Add(box.min, box.max), 0.5f);
+        float radius = Vector3Distance(center, box.max);
+        sceneModel->meshBoundingSpheres[i] = (Vector4){center.x, center.y, center.z, radius};
+    }
 
     return (SceneModelId){sceneId, index, sceneModel->generation};
 }
@@ -403,6 +599,7 @@ void ReleaseSceneNode(SceneNodeId sceneNodeId)
     }
 
     // add to free list
+    node->parent = (SceneNodeId){0};
     node->nextSiblingId = scene->firstFree;
     scene->firstFree = sceneNodeId;
 }

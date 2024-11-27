@@ -44,11 +44,26 @@ typedef struct SceneModelId {
     long generation;
 } SceneModelId;
 
+typedef struct SceneDrawConfig {
+    Camera3D camera;
+    Matrix transform;
+    unsigned long layerMask;
+    unsigned char sortMode;
+    unsigned char drawBoundingBoxes: 1;
+    unsigned char drawCameraFrustum: 1;
+} SceneDrawConfig;
+
+typedef struct SceneDrawStats {
+    unsigned long culledMeshCount;
+    unsigned long meshDrawCount;
+    unsigned long trianglesDrawCount;
+} SceneDrawStats;
+
 // creates a new empty scene
 SceneId LoadScene();
 void UnloadScene(SceneId sceneId);
 int IsSceneValid(SceneId sceneId);
-void DrawScene(SceneId sceneId, Camera3D camera, Matrix transform, unsigned long layerMask, int sortMode);
+SceneDrawStats DrawScene(SceneId sceneId, SceneDrawConfig config);
 SceneModelId AddModelToScene(SceneId sceneId, Model model, const char* name, int manageModel);
 void TraverseSceneNodes(SceneId sceneId, void (*callback)(SceneNodeId, void*), void* data);
 
